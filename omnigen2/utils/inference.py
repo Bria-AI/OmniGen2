@@ -1,12 +1,17 @@
 import argparse
+
 import torch
 from accelerate import Accelerator
 from diffusers.hooks import apply_group_offloading
+from PIL import Image
+
 from omnigen2.models.transformers.transformer_omnigen2 import OmniGen2Transformer2DModel
 from omnigen2.pipelines.omnigen2.pipeline_omnigen2 import OmniGen2Pipeline
 
 
-def load_pipeline(args: argparse.Namespace, accelerator: Accelerator, weight_dtype: torch.dtype) -> OmniGen2Pipeline:
+def load_pipeline(
+    args: argparse.Namespace, accelerator: Accelerator, weight_dtype: torch.dtype
+) -> OmniGen2Pipeline:
     pipeline = OmniGen2Pipeline.from_pretrained(
         args.model_path,
         torch_dtype=weight_dtype,
@@ -31,7 +36,9 @@ def load_pipeline(args: argparse.Namespace, accelerator: Accelerator, weight_dty
         pipeline.load_lora_weights(args.transformer_lora_path)
 
     if args.enable_teacache and args.enable_taylorseer:
-        print("WARNING: enable_teacache and enable_taylorseer are mutually exclusive. enable_teacache will be ignored.")
+        print(
+            "WARNING: enable_teacache and enable_taylorseer are mutually exclusive. enable_teacache will be ignored."
+        )
 
     if args.enable_taylorseer:
         pipeline.enable_taylorseer = True
@@ -40,7 +47,10 @@ def load_pipeline(args: argparse.Namespace, accelerator: Accelerator, weight_dty
         pipeline.transformer.teacache_rel_l1_thresh = args.teacache_rel_l1_thresh
 
     if args.scheduler == "dpmsolver++":
-        from omnigen2.schedulers.scheduling_dpmsolver_multistep import DPMSolverMultistepScheduler
+        from omnigen2.schedulers.scheduling_dpmsolver_multistep import (
+            DPMSolverMultistepScheduler,
+        )
+
         scheduler = DPMSolverMultistepScheduler(
             algorithm_type="dpmsolver++",
             solver_type="midpoint",
@@ -54,10 +64,57 @@ def load_pipeline(args: argparse.Namespace, accelerator: Accelerator, weight_dty
     elif args.enable_model_cpu_offload:
         pipeline.enable_model_cpu_offload()
     elif args.enable_group_offload:
-        apply_group_offloading(pipeline.transformer, onload_device=accelerator.device, offload_type="block_level", num_blocks_per_group=2, use_stream=True)
-        apply_group_offloading(pipeline.mllm, onload_device=accelerator.device, offload_type="block_level", num_blocks_per_group=2, use_stream=True)
-        apply_group_offloading(pipeline.vae, onload_device=accelerator.device, offload_type="block_level", num_blocks_per_group=2, use_stream=True)
+        apply_group_offloading(
+            pipeline.transformer,
+            onload_device=accelerator.device,
+            offload_type="block_level",
+            num_blocks_per_group=2,
+            use_stream=True,
+        )
+        apply_group_offloading(
+            pipeline.mllm,
+            onload_device=accelerator.device,
+            offload_type="block_level",
+            num_blocks_per_group=2,
+            use_stream=True,
+        )
+        apply_group_offloading(
+            pipeline.vae,
+            onload_device=accelerator.device,
+            offload_type="block_level",
+            num_blocks_per_group=2,
+            use_stream=True,
+        )
     else:
         pipeline = pipeline.to(accelerator.device)
 
     return pipeline
+
+
+def run(
+    args: argparse.Namespace,
+    accelerator: Accelerator,
+    pipeline: OmniGen2Pipeline,
+    instruction: str,
+    negative_prompt: str,
+    input_images: list[Image.Image],
+) -> Image.Image:
+    """Run the image generation pipeline with the given parameters."""
+    generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
+
+    results = pipeline(
+        prompt=instruction,
+        input_images=input_images,
+        width=args.width,
+        height=args.height,
+        num_inference_steps=args.num_inference_step,
+        max_sequence_length=1024,
+        text_guidance_scale=args.text_guidance_scale,
+        image_guidance_scale=args.image_guidance_scale,
+        cfg_range=(args.cfg_range_start, args.cfg_range_end),
+        negative_prompt=negative_prompt,
+        num_images_per_prompt=args.num_images_per_prompt,
+        generator=generator,
+        output_type="pil",
+    )
+    return results
